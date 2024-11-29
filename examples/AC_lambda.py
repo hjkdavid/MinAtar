@@ -25,6 +25,7 @@ import numpy, argparse, logging, os
 
 from collections import namedtuple
 from minatar import Environment
+from tqdm import tqdm
 
 
 #####################################################################################################################
@@ -176,7 +177,7 @@ def train(sample, traces, grads, MSGs, network, alpha, time_step):
 
     # Update parameters except for on the first observation
     if(last_state is not None):
-        network.zero_grad()
+        # network.zero_grad()
         entropy.backward()
         with torch.no_grad():
             V_last = network(last_state)[1]
@@ -253,66 +254,70 @@ def AC_lambda(env, output_file_name, store_intermediate_result=False, load_path=
     # Start the simulation
     # Train for a number of frames
     t_start = time.time()
-    while t < NUM_FRAMES:
-        # Initialize the return for every episode (we should see this eventually increase)
-        G = 0.0
+    with tqdm(total=NUM_FRAMES - t) as pbar:
+        t_old = t
+        while t < NUM_FRAMES:
+            pbar.update(t - t_old)
+            t_old = t
+            # Initialize the return for every episode (we should see this eventually increase)
+            G = 0.0
 
-        # Initialize the environment and start state
-        env.reset()
-        s = get_state(env.state())
-        is_terminated = False
-        s_last = None
-        r_last = None
-        term_last = None
-        while(not is_terminated) and t < NUM_FRAMES:
-            # Generate data
-            s_prime, action, reward, is_terminated = world_dynamics(s, env, network)
+            # Initialize the environment and start state
+            env.reset()
+            s = get_state(env.state())
+            is_terminated = False
+            s_last = None
+            r_last = None
+            term_last = None
+            while(not is_terminated) and t < NUM_FRAMES:
+                # Generate data
+                s_prime, action, reward, is_terminated = world_dynamics(s, env, network)
 
+                sample = transition(s, s_last, action, r_last, term_last)
+
+                train(sample, traces, grads, MSG, network, alpha, t)
+
+                G += reward.item()
+
+                t += 1
+
+                # Continue the process
+                s_last = s
+                r_last = reward
+                term_last = is_terminated
+                s = s_prime
+
+            # Increment the episodes
+            e += 1
             sample = transition(s, s_last, action, r_last, term_last)
-
             train(sample, traces, grads, MSG, network, alpha, t)
 
-            G += reward.item()
-
-            t += 1
-
-            # Continue the process
-            s_last = s
-            r_last = reward
-            term_last = is_terminated
-            s = s_prime
-
-        # Increment the episodes
-        e += 1
-        sample = transition(s, s_last, action, r_last, term_last)
-        train(sample, traces, grads, MSG, network, alpha, t)
-
-        # Clear elligibility traces after each episode
-        for trace in traces:
-            trace.zero_()
+            # Clear elligibility traces after each episode
+            for trace in traces:
+                trace.zero_()
 
 
-        # Save the return for each episode
-        returns.append(G)
-        frame_stamps.append(t)
+            # Save the return for each episode
+            returns.append(G)
+            frame_stamps.append(t)
 
-        # Logging exponentiated return only when verbose is turned on and only at 1000 episode intervals
-        avg_return = 0.99 * avg_return + 0.01 * G
-        if e % 1000 == 0:
-            logging.info("Episode " + str(e) + " | Return: " + str(G) + " | Avg return: " +
-                         str(numpy.around(avg_return, 2)) + " | Frame: " + str(t)+" | Time per frame: " +
-                         str((time.time()-t_start)/t) )
+            # Logging exponentiated return only when verbose is turned on and only at 1000 episode intervals
+            avg_return = 0.99 * avg_return + 0.01 * G
+            if e % 10 == 0:
+                logging.info("Episode " + str(e) + " | Return: " + str(G) + " | Avg return: " +
+                            str(numpy.around(avg_return, 2)) + " | Frame: " + str(t)+" | Time per frame: " +
+                            str((time.time()-t_start)/t) )
 
-        # Save model data and other intermediate data if specified
-        if store_intermediate_result and e % 1000 == 0:
-            torch.save({
-                        'episode': e,
-                        'frame': t,
-                        'network_state_dict': network.state_dict(),
-                        'avg_return': avg_return,
-                        'returns': returns,
-                        'frame_stamps': frame_stamps,
-            }, output_file_name + "_checkpoint")
+            # Save model data and other intermediate data if specified
+            if store_intermediate_result and e % 1000 == 0:
+                torch.save({
+                            'episode': e,
+                            'frame': t,
+                            'network_state_dict': network.state_dict(),
+                            'avg_return': avg_return,
+                            'returns': returns,
+                            'frame_stamps': frame_stamps,
+                }, output_file_name + "_checkpoint")
 
     # Print final logging info
     logging.info("Avg return: " + str(numpy.around(avg_return, 2)) + " | Time per frame: " +
@@ -328,9 +333,9 @@ def AC_lambda(env, output_file_name, store_intermediate_result=False, load_path=
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--game", "-g", type=str)
+    parser.add_argument("--game", "-g", type=str, default='space_invaders')
     parser.add_argument("--output", "-o", type=str)
-    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--verbose", "-v", action="store_true", default=True)
     parser.add_argument("--loadfile", "-l", type=str)
     parser.add_argument("--alpha", "-a", type=float, default=ALPHA)
     parser.add_argument("--save", "-s", action="store_true")
